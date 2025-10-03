@@ -13,6 +13,9 @@ Please review and understand what the script does before adding it to your own q
 
 Attention:
 The script will assume that the changes will be done in dom0 and therefore resets SyncVM to a clean `main`. This ensures Github is always a clear mirror of dom0.
+
+TODO: Fix documentation after moving from tar to git bundle to transfer data from dom0 to SyncVM
+
 ---
 
 ## Features
