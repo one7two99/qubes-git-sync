@@ -13,9 +13,12 @@
 
 set -euo pipefail
 
+# IMPORTANT - adjust the following variables to reflect your own setup
 SYNCVM="my-git-sync"
-GITHUB_USER="one7two99"   # <-- adjust this
+GITHUB_USER="one7two99"
 ALL_REPOS="my-qubes qubes-git-sync"
+
+# Location of the log file
 LOGFILE="$HOME/.qubes-git-sync.log"
 
 CMD="${1:-}"
