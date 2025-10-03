@@ -34,8 +34,8 @@ Usage: $0 {push|pull|gitpush|gitpull} <repository>|--all
 Commands:
   push     Copy repository from dom0 to $SYNCVM
   pull     Copy repository from $SYNCVM to dom0
-  gitpush  Sync dom0 → $SYNCVM and push changes to GitHub
-  gitpull  Pull latest from GitHub into $SYNCVM and sync to dom0
+  gitpush  Sync dom0 → $SYNCVM and force push to GitHub (mirror dom0)
+  gitpull  Pull from GitHub into $SYNCVM and sync to dom0
 
 Options:
   -h, --help   Show this help message
@@ -57,7 +57,6 @@ log() {
     echo "[$ts] [$level] $msg" | tee -a "$LOGFILE"
 }
 
-# Ensure repo exists in SyncVM, otherwise clone it
 ensure_repo_in_syncvm() {
     local repo="$1"
     if ! qvm-run "$SYNCVM" "test -d ~/repos/$repo/.git"; then
@@ -70,7 +69,6 @@ ensure_repo_in_syncvm() {
     fi
 }
 
-# Execute an action for a single repository
 do_action() {
     local action="$1"
     local repo="$2"
@@ -104,17 +102,26 @@ do_action() {
       gitpush)
         ensure_repo_in_syncvm "$repo" || { log FAIL "Setup for '$repo' failed."; return 1; }
         "$0" push "$repo" || { log FAIL "Push of '$repo' from dom0 to $SYNCVM failed."; return 1; }
-        if qvm-run "$SYNCVM" "cd ~/repos/$repo && git add . && git commit -m 'Sync from dom0' || true && git push"; then
-            log OK "Repo '$repo' successfully pushed from dom0 to GitHub."
+
+        if qvm-run "$SYNCVM" "
+          cd ~/repos/$repo &&
+          git fetch origin &&
+          (git checkout main || git checkout -b main origin/main) &&
+          git reset --hard origin/main &&
+          git add . &&
+          git commit -m 'Sync from dom0' || true &&
+          git push origin main --force
+        "; then
+            log OK "Repo '$repo' successfully mirrored from dom0 to GitHub."
         else
-            log FAIL "Git push for '$repo' failed. Please check logs in $SYNCVM."
+            log FAIL "Git push for '$repo' failed."
             return 1
         fi
         ;;
 
       gitpull)
         ensure_repo_in_syncvm "$repo" || { log FAIL "Setup for '$repo' failed."; return 1; }
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git pull --ff-only"; then
+        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git checkout main || git checkout -b main origin/main && git pull --ff-only"; then
             log FAIL "Git pull for '$repo' failed (non-fast-forward or network issue)."
             return 1
         fi
