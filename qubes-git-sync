@@ -1,27 +1,21 @@
 #!/bin/sh
-# qubes-git-sync: Synchronization of Git repositories between dom0, a SyncVM, and GitHub in Qubes OS
+# qubes-git-sync: Synchronize Git repositories between dom0, SyncVM, and GitHub
 #
-# Usage:
-#   qubes-git-sync push <repo>       # Copy repo from dom0 → SyncVM
-#   qubes-git-sync pull <repo>       # Copy repo from SyncVM → dom0
-#   qubes-git-sync gitpush <repo>    # dom0 → SyncVM, then commit & push to GitHub
-#   qubes-git-sync gitpull <repo>    # GitHub → SyncVM → dom0
-#   qubes-git-sync push --all        # Run for all repos in ALL_REPOS list
-#   qubes-git-sync gitpull --all     # Run for all repos in ALL_REPOS list
+# Workflow:
+#   - dom0 edits and commits changes
+#   - dom0 creates a git bundle and transfers it to SyncVM
+#   - SyncVM pulls from the bundle and pushes to GitHub
 #
-# Notes:
-#   - dom0 never connects to the internet directly
-#   - SyncVM must have git and SSH access to GitHub
-#   - SSH key must be stored in the SyncVM (never in dom0)
+# Assumptions:
+#   - dom0 is the primary place for edits
+#   - SyncVM has SSH access to GitHub
+#   - GitHub is treated as a normal repository (history preserved)
 
 set -euo pipefail
 
-# !!! IMPORTANT !!! - Change this to your own settings
-SYNCVM="my-git-sync"                 # Name of the AppVM which will do the sync
-GITHUB_USER="your-github-username"   # Change this to your GitHub username
-ALL_REPOS="repo1 another-repo"       # Add your default repos which should be synced when using the --all flag
-
-# Default logging location
+SYNCVM="my-git-sync"
+GITHUB_USER="your-github-username"   # <-- adjust this
+ALL_REPOS="my-qubes another-repo scripts-docs"
 LOGFILE="$HOME/.qubes-git-sync.log"
 
 CMD="${1:-}"
@@ -29,22 +23,19 @@ ARG="${2:-}"
 
 usage() {
     cat <<EOF
-Usage: $0 {push|pull|gitpush|gitpull} <repository>|--all
+Usage: $0 {gitpush|gitpull} <repository>|--all
 
 Commands:
-  push     Copy repository from dom0 to $SYNCVM
-  pull     Copy repository from $SYNCVM to dom0
-  gitpush  Sync dom0 → $SYNCVM and force push to GitHub (mirror dom0)
-  gitpull  Pull from GitHub into $SYNCVM and sync to dom0
+  gitpush  Create a git bundle in dom0, import it in $SYNCVM, and push to GitHub
+  gitpull  Pull latest commits from GitHub in $SYNCVM and sync back to dom0
 
 Options:
-  -h, --help   Show this help message
-  --all        Run the command for all repositories defined in ALL_REPOS
+  -h, --help   Show this help
+  --all        Run for all repos in ALL_REPOS
 
 Examples:
-  $0 push my-qubes
-  $0 gitpush --all
-
+  $0 gitpush my-qubes
+  $0 gitpull --all
 EOF
     exit 1
 }
@@ -60,12 +51,11 @@ log() {
 ensure_repo_in_syncvm() {
     local repo="$1"
     if ! qvm-run "$SYNCVM" "test -d ~/repos/$repo/.git"; then
-        log INFO "Repo '$repo' not found in $SYNCVM, attempting git clone ..."
+        log INFO "Cloning '$repo' in $SYNCVM ..."
         if ! qvm-run "$SYNCVM" "mkdir -p ~/repos && cd ~/repos && git clone git@github.com:$GITHUB_USER/$repo.git"; then
-            log FAIL "git clone for '$repo' failed. Please check network/SSH key."
+            log FAIL "Clone of '$repo' failed. Check SSH/network."
             return 1
         fi
-        log OK "Repo '$repo' successfully cloned in $SYNCVM."
     fi
 }
 
@@ -74,59 +64,49 @@ do_action() {
     local repo="$2"
 
     case "$action" in
-      push)
-        if [ ! -d "$HOME/repos/$repo" ]; then
-            log FAIL "Repository $HOME/repos/$repo does not exist in dom0."
-            return 1
-        fi
-        if tar -C "$HOME/repos/$repo" -cf - . \
-            | qvm-run --pass-io "$SYNCVM" "mkdir -p ~/repos/$repo && tar -C ~/repos/$repo -xf -"; then
-            log OK "Repo '$repo' successfully copied from dom0 to $SYNCVM."
-        else
-            log FAIL "Transfer of '$repo' to $SYNCVM failed."
-            return 1
-        fi
-        ;;
-
-      pull)
-        mkdir -p "$HOME/repos/$repo"
-        if qvm-run --pass-io "$SYNCVM" "tar -C ~/repos/$repo -cf - ." \
-            | tar -C "$HOME/repos/$repo" -xf -; then
-            log OK "Repo '$repo' successfully copied from $SYNCVM to dom0."
-        else
-            log FAIL "Transfer of '$repo' from $SYNCVM to dom0 failed."
-            return 1
-        fi
-        ;;
-
       gitpush)
-        ensure_repo_in_syncvm "$repo" || { log FAIL "Setup for '$repo' failed."; return 1; }
-        "$0" push "$repo" || { log FAIL "Push of '$repo' from dom0 to $SYNCVM failed."; return 1; }
+        if [ ! -d "$HOME/repos/$repo/.git" ]; then
+            log FAIL "Repo $HOME/repos/$repo not found in dom0."
+            return 1
+        fi
 
+        # Ensure SyncVM repo exists
+        ensure_repo_in_syncvm "$repo"
+
+        # Create git bundle in dom0
+        bundle="/tmp/$repo.bundle"
+        cd "$HOME/repos/$repo"
+        git bundle create "$bundle" --all || { log FAIL "Bundle creation failed for $repo."; return 1; }
+
+        # Transfer bundle to SyncVM
+        cat "$bundle" | qvm-run --pass-io "$SYNCVM" "cat > /tmp/$repo.bundle"
+
+        # Import bundle and push to GitHub
         if qvm-run "$SYNCVM" "
           cd ~/repos/$repo &&
-          git fetch origin &&
-          (git checkout main || git checkout -b main origin/main) &&
-          git reset --hard origin/main &&
-          git add . &&
-          git commit -m 'Sync from dom0' || true &&
-          git push origin main --force
+          git fetch /tmp/$repo.bundle refs/heads/*:refs/remotes/bundle/* &&
+          git merge bundle/main --ff-only &&
+          git push origin main
         "; then
-            log OK "Repo '$repo' successfully mirrored from dom0 to GitHub."
+            log OK "Repo '$repo' successfully pushed from dom0 to GitHub."
         else
-            log FAIL "Git push for '$repo' failed."
+            log FAIL "Push for '$repo' failed."
             return 1
         fi
+        rm -f "$bundle"
         ;;
 
       gitpull)
         ensure_repo_in_syncvm "$repo" || { log FAIL "Setup for '$repo' failed."; return 1; }
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git checkout main || git checkout -b main origin/main && git pull --ff-only"; then
-            log FAIL "Git pull for '$repo' failed (non-fast-forward or network issue)."
+        if qvm-run "$SYNCVM" "cd ~/repos/$repo && git pull --ff-only"; then
+            # Sync back to dom0
+            tarfile="/tmp/$repo-sync.tar"
+            qvm-run --pass-io "$SYNCVM" "tar -C ~/repos/$repo -cf - ." | tar -C "$HOME/repos/$repo" -xf -
+            log OK "Repo '$repo' updated from GitHub into dom0."
+        else
+            log FAIL "Git pull failed for '$repo'."
             return 1
         fi
-        "$0" pull "$repo" || { log FAIL "Pull of '$repo' from $SYNCVM to dom0 failed."; return 1; }
-        log OK "Repo '$repo' successfully pulled from GitHub into dom0."
         ;;
 
       *)
@@ -135,13 +115,12 @@ do_action() {
     esac
 }
 
-# --- Main routine ---
 case "$CMD" in
   -h|--help|"")
     usage
     ;;
 
-  push|pull|gitpush|gitpull)
+  gitpush|gitpull)
     if [ "$ARG" = "--all" ]; then
         total=0; ok=0; fail=0
         for r in $ALL_REPOS; do
