@@ -1,155 +1,127 @@
-# Qubes Git Sync
+# qubes-git-sync
 
-`qubes-git-sync` is a simple command-line tool to synchronize Git repositories between **dom0**, a dedicated **SyncVM** (e.g., `my-git-sync`), and **GitHub** in a Qubes OS environment.  
+Synchronize Git repositories between **dom0**, a dedicated **SyncVM**, and **GitHub** in [Qubes OS](https://www.qubes-os.org/).  
 
-Since dom0 must not connect to the internet directly, this script provides a secure workflow:  
-- dom0 → SyncVM → GitHub  
-- GitHub → SyncVM → dom0  
+This script enables you to keep full Git history while respecting Qubes’ strict isolation model:
+- **dom0**: edit files, stage, and commit (but never connect to the network).
+- **SyncVM**: acts as a proxy — it receives commit bundles from dom0 and pushes them to GitHub.
+- **GitHub**: stores your full repository history.
 
-It uses `qvm-run --pass-io` to transfer repository data and delegates all GitHub interaction (SSH keys, network) to the SyncVM.  
-
-Hints:
+**To stay reasonable secure:**
 Please review and understand what the script does before adding it to your own qubes installation (as with every other piece of code you get from the internet :-)
 
-Attention:
-The script will assume that the changes will be done in dom0 and therefore resets SyncVM to a clean `main`. This ensures Github is always a clear mirror of dom0.
-
-TODO v6: Fix documentation after moving from tar to git bundle to transfer data from dom0 to SyncVM
-
 ---
 
-## Features
+## Why?
 
-- **Push / Pull** repositories between dom0 and SyncVM  
-- **gitpush**: dom0 → SyncVM → GitHub  
-- **gitpull**: GitHub → SyncVM → dom0  
-- **--all** flag: run actions for multiple repositories defined in the script  
-- Logging with timestamps to `~/.qubes-git-sync.log`  
-- Clear `[OK]`, `[INFO]`, and `[FAIL]` messages in both terminal and logfile  
-- End-of-run summary when using `--all`  
+Qubes OS intentionally disconnects dom0 from the network for security.  
+That means you cannot `git push` from dom0 directly.  
+This script provides a secure workflow:
 
----
-
-## Requirements
-
-- Qubes OS  
-- A dedicated AppVM for Git sync, e.g., `my-git-sync`, with:
-  - Internet access  
-  - `git` and `openssh-client` installed in its template  
-  - Your GitHub SSH key stored in `~/.ssh/` (inside the SyncVM, **not** in dom0)  
-- The repositories cloned (or auto-cloned by the script) in `~/repos/<repo>` inside the SyncVM  
-- Make sure that user.email and user.name for git commits are setup correctly in the SyncVM! This is required so that pushing commits will work. To do so run the following command in the SyncVM:  
-  - `git config --global user.name 'NAME'
-  - `git config --global user.email 'EMAIL'
+- Keep **real Git history** in dom0.  
+- Use `git bundle` to export commits from dom0.  
+- Transfer the bundle to SyncVM via `qvm-run --pass-io`.  
+- SyncVM imports the commits and pushes to GitHub.  
+- Optionally, SyncVM can pull updates from GitHub and copy them back to dom0.  
 
 ---
 
 ## Installation
 
-1. Copy the script into dom0:  
+1. Copy the script into dom0:
 
    ```bash
-   sudo nano /usr/local/bin/qubes-git-sync
+   sudo install -m 755 qubes-git-sync /usr/local/bin/qubes-git-sync
    ```
 
-   Paste the script content.  
+2. Adjust these variables in the script if needed:
+   - `SYNCVM="my-git-sync"` → name of your dedicated AppVM that has network access to GitHub.
+   - `GITHUB_USER="your-github-username"` → your GitHub username.
+   - `ALL_REPOS="my-qubes another-repo scripts-docs"` → list of repositories managed by `--all`.
 
-2. Make it executable:  
+3. In your SyncVM:
+   - Configure SSH access to GitHub (e.g. deploy your SSH keys).
+   - Ensure `git` is installed.
 
-   ```bash
-   sudo chmod +x /usr/local/bin/qubes-git-sync
-   ```
-
-3. Edit the variables inside the script:  
-   - `SYNCVM="my-git-sync"` → your chosen sync VM  
-   - `GITHUB_USER="your-github-username"`  
-   - `ALL_REPOS="repo1 repo2 repo3"` → list of default repositories  
+4. Make sure that user.email and user.name for git commits are setup correctly in the SyncVM an dom0! This is required so that pushing commits will work. To do so run the following commands:
+   - `git config --global user.name 'NAME'`
+   - `git config --global user.email 'EMAIL'`
 
 ---
 
 ## Usage
 
-```bash
-qubes-git-sync {push|pull|gitpush|gitpull} <repository>|--all
-```
+### Daily Workflow
 
-### Commands
+1. **In dom0**
+   - Edit your files as usual.
+   - Stage and commit changes:
+     ```bash
+     git add file1 file2
+     git commit -m "Describe your changes"
+     ```
 
-- **push `<repo>`**  
-  Copy repository from dom0 → SyncVM  
+2. **Sync changes to GitHub**
+   ```bash
+   qubes-git-sync gitpush <repository>
+   ```
 
-- **pull `<repo>`**  
-  Copy repository from SyncVM → dom0  
+   This will:
+   - Create a `git bundle` in dom0.
+   - Transfer it securely to your SyncVM.
+   - Import the bundle and push commits to GitHub.
 
-- **gitpush `<repo>`**  
-  Sync dom0 → SyncVM and then run `git add/commit/push` from the SyncVM to GitHub  
-
-- **gitpull `<repo>`**  
-  Run `git pull --ff-only` in SyncVM and then copy the updated repository to dom0  
-
-### Options
-
-- `--all` → Perform the action for all repositories in the `ALL_REPOS` list  
-- `-h` or `--help` → Show usage  
+3. **Pull updates from GitHub into dom0**
+   ```bash
+   qubes-git-sync gitpull <repository>
+   ```
+   This will:
+   - `git pull` in SyncVM from GitHub.
+   - Copy the updated repository tree back to dom0.
 
 ---
 
-## Examples
+### Examples
 
-Push a single repository from dom0 to SyncVM:  
-
-```bash
-qubes-git-sync push my-qubes
-```
-
-Pull from SyncVM to dom0:  
-
-```bash
-qubes-git-sync pull my-qubes
-```
-
-Push local changes from dom0 to GitHub in one step:  
-
+Push one repository:
 ```bash
 qubes-git-sync gitpush my-qubes
 ```
 
-Pull the latest changes from GitHub into dom0:  
-
-```bash
-qubes-git-sync gitpull my-qubes
-```
-
-Run an operation for all default repositories:  
-
+Push all repositories defined in `ALL_REPOS`:
 ```bash
 qubes-git-sync gitpush --all
-qubes-git-sync gitpull --all
+```
+
+Pull latest changes from GitHub into dom0:
+```bash
+qubes-git-sync gitpull my-qubes
 ```
 
 ---
 
 ## Logging
 
-All operations are logged to `~/.qubes-git-sync.log` with timestamps.  
-Sample log output:  
-
+All actions are logged in dom0 at:
 ```
-[2025-10-03 16:02:11] [INFO] Repo 'my-qubes' not found, attempting git clone ...
-[2025-10-03 16:02:15] [OK] Repo 'my-qubes' successfully cloned.
-[2025-10-03 16:02:18] [OK] Repo 'my-qubes' successfully pushed from dom0 to GitHub.
-[2025-10-03 16:02:20] [FAIL] Git pull for 'another-repo' failed (non-fast-forward or network issue).
-[2025-10-03 16:02:20] [INFO] Summary: 1 successful, 1 failed, total 2.
+~/.qubes-git-sync.log
 ```
 
 ---
 
 ## Security Notes
 
-- dom0 never connects to the internet directly.  
-- SSH keys are stored only in the SyncVM.  
-- dom0 communicates with SyncVM via `qvm-run --pass-io` (data streams only).  
-- You can control access by limiting which repos are in `ALL_REPOS`.  
+- dom0 never connects to the network; only SyncVM interacts with GitHub.  
+- Only committed changes are synchronized. Uncommitted edits in dom0 will not be included.  
+- Temporary bundle files are removed after each sync (both in dom0 and SyncVM).  
+
+---
+
+## Limitations
+
+- Only the `main` branch is synchronized.  
+- Merge conflicts are not automatically resolved — the script enforces fast-forward merges only.  
+- If you forget to commit in dom0 before running `gitpush`, no changes will be transferred.  
 
 ---
 
