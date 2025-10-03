@@ -8,6 +8,9 @@ Since dom0 must not connect to the internet directly, this script provides a sec
 
 It uses `qvm-run --pass-io` to transfer repository data and delegates all GitHub interaction (SSH keys, network) to the SyncVM.  
 
+Hints:
+Please review and understand what the script does before adding it to your own qubes installation (as with every other piece of code you get from the internet :-)
+
 ---
 
 ## Features
@@ -30,6 +33,9 @@ It uses `qvm-run --pass-io` to transfer repository data and delegates all GitHub
   - `git` and `openssh-client` installed in its template  
   - Your GitHub SSH key stored in `~/.ssh/` (inside the SyncVM, **not** in dom0)  
 - The repositories cloned (or auto-cloned by the script) in `~/repos/<repo>` inside the SyncVM  
+- Make sure that user.email and user.name for git commits are setup correctly in the SyncVM! This is required so that pushing commits will work. To do so run the following command in the SyncVM:  
+  - `git config --global user.name 'NAME'
+  - `git config --global user.email 'EMAIL'
 
 ---
 
