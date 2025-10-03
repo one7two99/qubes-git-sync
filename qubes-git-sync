@@ -1,5 +1,5 @@
 #!/bin/sh
-# qubes-git-sync: Synchronize Git repositories between dom0, SyncVM, and GitHub
+# qubes-git-sync: Synchronize Git repositories between dom0, SyncVM, and GitHub in Qubes OS
 #
 # Workflow:
 #   - dom0 edits and commits changes
@@ -14,8 +14,8 @@
 set -euo pipefail
 
 SYNCVM="my-git-sync"
-GITHUB_USER="your-github-username"   # <-- adjust this
-ALL_REPOS="my-qubes another-repo scripts-docs"
+GITHUB_USER="one7two99"   # <-- adjust this
+ALL_REPOS="my-qubes qubes-git-sync"
 LOGFILE="$HOME/.qubes-git-sync.log"
 
 CMD="${1:-}"
@@ -70,43 +70,68 @@ do_action() {
             return 1
         fi
 
-        # Ensure SyncVM repo exists
         ensure_repo_in_syncvm "$repo"
 
-        # Create git bundle in dom0
         bundle="/tmp/$repo.bundle"
         cd "$HOME/repos/$repo"
-        git bundle create "$bundle" --all || { log FAIL "Bundle creation failed for $repo."; return 1; }
+        git bundle create "$bundle" HEAD main || { log FAIL "Bundle creation failed for $repo."; return 1; }
 
-        # Transfer bundle to SyncVM
         cat "$bundle" | qvm-run --pass-io "$SYNCVM" "cat > /tmp/$repo.bundle"
+        rm -f "$bundle"
 
-        # Import bundle and push to GitHub
-        if qvm-run "$SYNCVM" "
-          cd ~/repos/$repo &&
-          git fetch /tmp/$repo.bundle refs/heads/*:refs/remotes/bundle/* &&
-          git merge bundle/main --ff-only &&
-          git push origin main
-        "; then
-            log OK "Repo '$repo' successfully pushed from dom0 to GitHub."
-        else
-            log FAIL "Push for '$repo' failed."
+        # Step 1: fetch from bundle
+        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git fetch /tmp/$repo.bundle main:refs/remotes/bundle/main"; then
+            log FAIL "git fetch failed for $repo in $SYNCVM"
             return 1
         fi
-        rm -f "$bundle"
+
+        # Step 2: checkout or create main
+        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && (git checkout main || git checkout -b main origin/main)"; then
+            log FAIL "git checkout main failed for $repo in $SYNCVM"
+            return 1
+        fi
+
+        # Step 3: merge bundle into main
+        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git merge bundle/main --ff-only"; then
+            log FAIL "git merge failed for $repo in $SYNCVM"
+            return 1
+        fi
+
+        # Step 4: push to GitHub
+        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git push origin main"; then
+            log FAIL "git push failed for $repo in $SYNCVM"
+            return 1
+        fi
+
+        # Step 5: remove bundle file in SyncVM /tmp
+        qvm-run "$SYNCVM" "rm -f /tmp/$repo.bundle" || true
+
+        log OK "Repo '$repo' successfully pushed from dom0 to GitHub."
         ;;
 
       gitpull)
         ensure_repo_in_syncvm "$repo" || { log FAIL "Setup for '$repo' failed."; return 1; }
-        if qvm-run "$SYNCVM" "cd ~/repos/$repo && git pull --ff-only"; then
-            # Sync back to dom0
-            tarfile="/tmp/$repo-sync.tar"
-            qvm-run --pass-io "$SYNCVM" "tar -C ~/repos/$repo -cf - ." | tar -C "$HOME/repos/$repo" -xf -
-            log OK "Repo '$repo' updated from GitHub into dom0."
-        else
-            log FAIL "Git pull failed for '$repo'."
+
+        # Step 1: checkout or create main
+        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && (git checkout main || git checkout -b main origin/main)"; then
+            log FAIL "git checkout main failed for $repo in $SYNCVM"
             return 1
         fi
+
+        # Step 2: pull from GitHub
+        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git pull --ff-only"; then
+            log FAIL "git pull failed for $repo in $SYNCVM"
+            return 1
+        fi
+
+        # Step 3: copy repo back to dom0
+        mkdir -p "$HOME/repos/$repo"
+        if ! qvm-run --pass-io "$SYNCVM" "tar -C ~/repos/$repo -cf - ." | tar -C "$HOME/repos/$repo" -xf -; then
+            log FAIL "Transfer of '$repo' from $SYNCVM to dom0 failed"
+            return 1
+        fi
+
+        log OK "Repo '$repo' successfully updated from GitHub into dom0."
         ;;
 
       *)
