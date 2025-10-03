@@ -11,6 +11,8 @@ It uses `qvm-run --pass-io` to transfer repository data and delegates all GitHub
 Hints:
 Please review and understand what the script does before adding it to your own qubes installation (as with every other piece of code you get from the internet :-)
 
+Attention:
+The script will assume that the changes will be done in dom0 and therefore resets SyncVM to a clean `main`. This ensures Github is always a clear mirror of dom0.
 ---
 
 ## Features
