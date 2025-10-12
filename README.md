@@ -38,6 +38,7 @@ This script provides a secure workflow:
    - `SYNCVM="my-git-sync"` → name of your dedicated AppVM that has network access to GitHub.
    - `GITHUB_USER="your-github-username"` → your GitHub username.
    - `ALL_REPOS="my-qubes another-repo scripts-docs"` → list of repositories managed by `--all`.
+   - Optional: export `DEFAULT_BRANCH` (defaults to `main`) if you need to sync a different branch.
 
 3. In your SyncVM:
    - Configure SSH access to GitHub (e.g. deploy your SSH keys).
@@ -119,7 +120,7 @@ All actions are logged in dom0 at:
 
 ## Limitations
 
-- Only the `main` branch is synchronized.  
+- The default branch synced is controlled by the `DEFAULT_BRANCH` environment variable (defaults to `main`).  
 - Merge conflicts are not automatically resolved — the script enforces fast-forward merges only.  
 - If you forget to commit in dom0 before running `gitpush`, no changes will be transferred.  
 
