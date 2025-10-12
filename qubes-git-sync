@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # qubes-git-sync: Synchronize Git repositories between dom0, SyncVM, and GitHub in Qubes OS
 #
 # Workflow:
@@ -12,6 +12,11 @@
 #   - GitHub is treated as a normal repository (history preserved)
 
 set -euo pipefail
+
+# DEFAULT_BRANCH allows overriding the branch synchronized between dom0 and the
+# remote repository.  It defaults to "main" but can be set by the user before
+# invoking the script.
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
 
 # IMPORTANT - adjust the following variables to reflect your own setup
 SYNCVM="my-git-sync"
@@ -40,6 +45,10 @@ Examples:
   $0 gitpush my-qubes
   $0 gitpull --all
 EOF
+}
+
+die_usage() {
+    usage
     exit 1
 }
 
@@ -48,14 +57,23 @@ log() {
     local msg="$*"
     local ts
     ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    mkdir -p "$(dirname "$LOGFILE")"
     echo "[$ts] [$level] $msg" | tee -a "$LOGFILE"
+}
+
+run_syncvm() {
+    qvm-run "$SYNCVM" "$@"
+}
+
+run_syncvm_io() {
+    qvm-run --pass-io "$SYNCVM" "$@"
 }
 
 ensure_repo_in_syncvm() {
     local repo="$1"
-    if ! qvm-run "$SYNCVM" "test -d ~/repos/$repo/.git"; then
+    if ! run_syncvm "test -d ~/repos/$repo/.git"; then
         log INFO "Cloning '$repo' in $SYNCVM ..."
-        if ! qvm-run "$SYNCVM" "mkdir -p ~/repos && cd ~/repos && git clone git@github.com:$GITHUB_USER/$repo.git"; then
+        if ! run_syncvm "mkdir -p ~/repos && cd ~/repos && git clone git@github.com:$GITHUB_USER/$repo.git"; then
             log FAIL "Clone of '$repo' failed. Check SSH/network."
             return 1
         fi
@@ -75,39 +93,52 @@ do_action() {
 
         ensure_repo_in_syncvm "$repo"
 
-        bundle="/tmp/$repo.bundle"
-        cd "$HOME/repos/$repo"
-        git bundle create "$bundle" HEAD main || { log FAIL "Bundle creation failed for $repo."; return 1; }
+        local bundle
+        bundle="$(mktemp "/tmp/${repo}.bundle.XXXXXX")"
+        trap 'rm -f "$bundle"; trap - RETURN' RETURN
 
-        cat "$bundle" | qvm-run --pass-io "$SYNCVM" "cat > /tmp/$repo.bundle"
-        rm -f "$bundle"
+        cd "$HOME/repos/$repo"
+        if ! git rev-parse --verify "$DEFAULT_BRANCH" >/dev/null 2>&1; then
+            log FAIL "Branch '$DEFAULT_BRANCH' not found in $repo on dom0."
+            return 1
+        fi
+
+        if ! git bundle create "$bundle" "$DEFAULT_BRANCH"; then
+            log FAIL "Bundle creation failed for $repo."
+            return 1
+        fi
+
+        if ! cat "$bundle" | run_syncvm_io "cat > /tmp/$repo.bundle"; then
+            log FAIL "Transfer of bundle for '$repo' to $SYNCVM failed."
+            return 1
+        fi
 
         # Step 1: fetch from bundle
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git fetch /tmp/$repo.bundle main:refs/remotes/bundle/main"; then
+        if ! run_syncvm "cd ~/repos/$repo && git fetch /tmp/$repo.bundle $DEFAULT_BRANCH:refs/remotes/bundle/$DEFAULT_BRANCH"; then
             log FAIL "git fetch failed for $repo in $SYNCVM"
             return 1
         fi
 
-        # Step 2: checkout or create main
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && (git checkout main || git checkout -b main origin/main)"; then
-            log FAIL "git checkout main failed for $repo in $SYNCVM"
+        # Step 2: checkout or create the default branch
+        if ! run_syncvm "cd ~/repos/$repo && (git checkout $DEFAULT_BRANCH || git checkout -b $DEFAULT_BRANCH origin/$DEFAULT_BRANCH)"; then
+            log FAIL "git checkout $DEFAULT_BRANCH failed for $repo in $SYNCVM"
             return 1
         fi
 
-        # Step 3: merge bundle into main
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git merge bundle/main --ff-only"; then
+        # Step 3: merge bundle into the default branch
+        if ! run_syncvm "cd ~/repos/$repo && git merge bundle/$DEFAULT_BRANCH --ff-only"; then
             log FAIL "git merge failed for $repo in $SYNCVM"
             return 1
         fi
 
         # Step 4: push to GitHub
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git push origin main"; then
+        if ! run_syncvm "cd ~/repos/$repo && git push origin $DEFAULT_BRANCH"; then
             log FAIL "git push failed for $repo in $SYNCVM"
             return 1
         fi
 
         # Step 5: remove bundle file in SyncVM /tmp
-        qvm-run "$SYNCVM" "rm -f /tmp/$repo.bundle" || true
+        run_syncvm "rm -f /tmp/$repo.bundle" || true
 
         log OK "Repo '$repo' successfully pushed from dom0 to GitHub."
         ;;
@@ -115,21 +146,21 @@ do_action() {
       gitpull)
         ensure_repo_in_syncvm "$repo" || { log FAIL "Setup for '$repo' failed."; return 1; }
 
-        # Step 1: checkout or create main
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && (git checkout main || git checkout -b main origin/main)"; then
-            log FAIL "git checkout main failed for $repo in $SYNCVM"
+        # Step 1: checkout or create the default branch
+        if ! run_syncvm "cd ~/repos/$repo && (git checkout $DEFAULT_BRANCH || git checkout -b $DEFAULT_BRANCH origin/$DEFAULT_BRANCH)"; then
+            log FAIL "git checkout $DEFAULT_BRANCH failed for $repo in $SYNCVM"
             return 1
         fi
 
         # Step 2: pull from GitHub
-        if ! qvm-run "$SYNCVM" "cd ~/repos/$repo && git pull --ff-only"; then
+        if ! run_syncvm "cd ~/repos/$repo && git pull --ff-only origin $DEFAULT_BRANCH"; then
             log FAIL "git pull failed for $repo in $SYNCVM"
             return 1
         fi
 
         # Step 3: copy repo back to dom0
         mkdir -p "$HOME/repos/$repo"
-        if ! qvm-run --pass-io "$SYNCVM" "tar -C ~/repos/$repo -cf - ." | tar -C "$HOME/repos/$repo" -xf -; then
+        if ! run_syncvm_io "tar -C ~/repos/$repo -cf - ." | tar -C "$HOME/repos/$repo" -xf -; then
             log FAIL "Transfer of '$repo' from $SYNCVM to dom0 failed"
             return 1
         fi
@@ -138,14 +169,18 @@ do_action() {
         ;;
 
       *)
-        usage
+        die_usage
         ;;
     esac
 }
 
 case "$CMD" in
-  -h|--help|"")
+  -h|--help)
     usage
+    exit 0
+    ;;
+  "")
+    die_usage
     ;;
 
   gitpush|gitpull)
@@ -164,11 +199,11 @@ case "$CMD" in
     elif [ -n "$ARG" ]; then
         do_action "$CMD" "$ARG"
     else
-        usage
+        die_usage
     fi
     ;;
 
   *)
-    usage
+    die_usage
     ;;
-esac
+ esac
