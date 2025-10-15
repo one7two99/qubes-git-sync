@@ -12,7 +12,7 @@ Please review and understand what the script does before adding it to your own q
 
 ---
 
-## Why?
+## Why is this script helpful?
 
 Qubes OS intentionally disconnects dom0 from the network for security.  
 That means you cannot `git push` from dom0 directly.  
