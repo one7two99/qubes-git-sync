@@ -8,7 +8,7 @@ This script enables you to keep full Git history while respecting Qubes’ stric
 - **GitHub**: stores your full repository history.
 
 **To stay reasonable secure:**
-Please review and understand what the script does before adding it to your own qubes installation (as with every other piece of code you get from the internet :-)
+Please review and understand what the script does before adding it to your own qubes installation (as with every other piece of code you get from the internet ;-)
 
 ---
 
